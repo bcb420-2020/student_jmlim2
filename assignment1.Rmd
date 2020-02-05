@@ -1,0 +1,634 @@
+---
+title: "Assignment 1"
+output:
+  html_document:
+    df_print: paged
+---
+Jongmin Lim
+<br>
+1004533686
+<br>
+BCH420 2020
+
+### Title ### 
+
+**Patient-Specific iPSC-Derived Astrocytes Contribute to Non-Cell-Autonomous Neurodegeneration in Parkinson’s Disease**
+
+### Backgrounds ### 
+
+This study is try to investigate does Parkinson's disease (PD) -specific iPSC-derived astrocyte cause morphological signs of neurodegeneration and abnormal, astrocyte-derived α-synuclein accumulation to ventral midbrain dopaminergic neurons (vmDAns). They hypothesize that patient-specific iPSC-derived astrocyte will cause abnormal morphological sign of neurodenerationto vmDAns. They further demonstrate the how does chaperon-mediated autophagy (CMA) related to this phenomenone and enhancement of CMA can protect PD astrocyte and vmAns via the clearance of α-synucleinaccumulation that can lead to neurodegeneration.
+
+### Dataset ### 
+This dataset is RNAseq expression of astrocyte, iPSC, PD-iPSC, PD-derived astrocyte, and derived-astrocyte. The purpose of this database is to validate astrocyte cell type identity by expression of astrocyte specific gene. This is important since they need to get correct cell type to proceed to experiment. This dataset is interesting to me because it shows the different in RNA expression between iPSC, derived-astrocyte, and astrocyte, which indicates how close can we derive one cell type to other type of cell. RNA expression data can be use to improve the qualitied of derived cell by using more specific transcription factors to get more closer to expected type of cell. By able to derived iPSC into multiple type of cells, we can use this type of techinique in multiple application, such as organoid, therapy, sample for experiment.
+
+
+**Collecting Data**
+
+- PD-iPSC has been collected from 3 PD patients.
+- iPSC and astrocyte has been collected from 3 healthy donors.
+- By using Retrovirus, they differentiated PD-iPSC and iPSC into derived PD-astrocyte and derived astrocyte correspondingly.
+
+**Control Condition**
+<br>
+Need to compare the RNA expression between derived-astrocyte to iPSC and astrocyte 
+
+- Healthy donor's iPSC
+- PD-iPSC
+- Astrocyte
+
+**Test conditions** 
+<br>
+These cells that they will use for experiment.
+
+- PD-derived astrocyte
+- Derived-astrocyte
+
+
+<br>
+
+### GSE ### {.tabset}
+
+**Load library**
+```{r, result='hide', message=FALSE, warning = FALSE}
+#List of package that need to be active for this project
+library(GEOmetadb)
+library(knitr)
+library(tidyr)
+library(biomaRt)
+library(edgeR)
+library(BiocGenerics)
+```
+
+
+**Information about Platform GSE**
+```{r, message=FALSE}
+#GEO description of of my dataset
+gse <- getGEO("GSE116124", GSEMatrix=FALSE)
+kable(data.frame(head(Meta(gse))), format = "html")
+```
+
+<br>
+**More Information about dataset**
+```{r, message=FALSE, result='hide'}
+current_gpl <- names(GPLList(gse))[1]
+current_gpl_info <- Meta(getGEO(current_gpl))
+```
+<br>
+
+
+**Platform Title:** `r current_gpl_info$title`\
+**Original submission date:** `r current_gpl_info$submission_date`\
+**Last update date:** `r current_gpl_info$last_update_date`\
+**Organism:** `r current_gpl_info$organism`\
+**No. of GEO datasets that use this technology:** `r length(current_gpl_info$series_id)`\
+**No. of GEO samples that use this technology:** `r length(current_gpl_info$sample_id)`
+
+
+<br>
+
+
+
+### Get and Clean Data ###
+
+**Get the expression Data**
+```{r, message=FALSE, result='hide', warning = FALSE}
+#Asign the file
+sfiles = getGEOSuppFiles('GSE116124')
+fnames = rownames(sfiles)
+cell_exp = read.delim(fnames[1], header=TRUE, check.names = FALSE)
+```
+<br>
+
+
+**Load first 15 row of dataset with html table format**
+```{r}
+#Load the dataset with html table format
+kable(cell_exp[1:15,1:5], format = "html")
+```
+<br>
+
+
+**ID_gene,gene_name, and gene_type are in one colums. Need to divide into first 3 columns**
+```{r}
+#Separate the first column in to 3 total based on the id, name,and type of gene
+cell_exp <- separate(cell_exp, col = "id_gene,gene_name,gene_type", into = c("id_gene", "gene_name", "gene_type"), sep = "\\,")
+#Load first 15 row of dataset with html table format
+kable(cell_exp[1:15,1:5], format = "html")
+```
+<br>
+
+
+### Modify the id_gene ###
+```{r}
+#Need to remove decimal point so I can map identifiersd without version
+cell_exp$id_gene  <- gsub(pattern = "\\.\\d+$", replacement = "", x = cell_exp$id_gene, ignore.case = TRUE)
+cell_exp
+```
+<br>
+
+
+**Dimension of dataset**
+
+
+```{r}
+#Look at the dimension of current dataset
+#58347 genes and 10 out of 13 are samples. 3 rows are id, name, and type of gene
+dim(cell_exp)
+```
+<br>
+
+**Define the group**
+
+- Cell type with corresponding GSM number can be find in this link and gse [link](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE116124)
+- Divide into 2 groups since there is 2 replicates 
+- Open the gse file directly and identify the cell type with correspoding sample code (AD####).
+
+```{r}
+#Define the group
+samples <- data.frame("compare" = c("A", "A", "B", "A", "B", "A", "B", "A", "B", "B"), #group name
+                      "cell_type" = c("iPSC-control", "iPSC-PD-LRKK2",                 #cell name
+                                      "hCOM-ASTRO", "hCOM-ASTRO",
+                                      "hASTRO-control","hASTRO-control",
+                                      "hASTRO-PD-LRRK2", "hASTRO-PD-LRRK2",
+                                      "iPSC-control", "iPSC-PD-LRKK2"))
+#Add corresponding rownames to each cell
+rownames(samples) <- colnames(cell_exp)[4:13]
+samples
+```
+<br>
+
+### Filtering ###
+
+- Y-RNA appear more than once in the row
+- According from lecture, don't need to filter out at this point
+
+```{r}
+#Summarize the count of each gene
+#Use gene name to make sure there is no duplicate
+summarized_gene_counts <- sort(table(cell_exp$gene_name), decreasing = TRUE)
+#Output that has greater than 1 count
+kable(summarized_gene_counts[which(summarized_gene_counts>1)[1:10]], format = "html")
+```
+<br>
+
+
+**Filtering the gene with low counts**
+
+- Need to filter out geens that have low counts
+- In edgeR, recommended to remove features wihtout at least 1 read per million
+- My sample has 5 groups and 2 replicates
+
+```{r}
+#Change to count per million
+cpms = cpm(cell_exp[,4:13])
+#Set the rowname of first colum of cell_exp dataset
+rownames(cpms) <- cell_exp[,1]
+#Remove 1 or lower read per million.
+#Keep the replicate group that equal or greater than 2
+keep = rowSums(cpms >1) >=2
+cell_exp_filtered = cell_exp[keep,]
+#Show the dimension of dataset after filteration
+dim(cell_exp_filtered)
+```
+- 58347-17148 = 41199 outliers were removed
+<br>
+
+
+```{r}
+#Summarize the count
+summarized_gene_counts_filtered <- sort(table(cell_exp_filtered$gene_name), decreasing = TRUE)
+#Output greater than 1
+kable(summarized_gene_counts_filtered[which(summarized_gene_counts_filtered>1)[1:10]], format = "html")
+```
+-Many duplicates genes filtered out
+
+
+<br>
+### Normalization ###
+
+- There are many variation that happen while collecting the data
+- Normalization remove tehcnicla variation and focus on biological variation, which is what we want to know
+- Sampling of set of genes and associating some metric with that sampling
+- There are many types of well characterized distribution, such as normal distribution and bimodal distribution
+- I will use boxplot and density plot to normalize and visulize the data
+<br>
+
+
+**Boxplot of dataset**
+```{r, warning = FALSE}
+#Calculate log to filitered data
+data2plot <- log2(cpm(cell_exp_filtered[,4:13]))
+#Plot the boxplot based on data2plot
+boxplot(data2plot, xlab = "Samples", ylab = "log2 CPM",
+        las = 2, cex = 0.5, cex.lab = 0.5,
+        cex.axis = 0.5, main = "Cells RNAseq Samples")
+#Draw the median of each box plot
+abline(h = median(apply(data2plot, 2, median)), col = "green", lwd = 0.6, lty = "dashed")
+```
+<br>
+
+
+**Density plot**
+```{r}
+#Calculate the data with log and set upt for density plot
+counts_density <- apply(log2(cpm(cell_exp_filtered[, 4:13])), 2, density)
+#Calculate the limits across all the samples
+xlim <- 0; ylim <- 0
+for (i in 1:length(counts_density)){
+  xlim <- range(c(xlim, counts_density[[i]]$x));    #x limit
+  ylim <- range(c(ylim, counts_density[[i]]$y))     #y limit
+}
+cols <- rainbow(length(counts_density))             #color
+ltys <- rep(1, length(counts_density))              #line style
+#plot the first density plot ot initialize the plot
+plot(counts_density[[1]], xlim=xlim, ylim=ylim, type="n",
+     ylab="Smoothing density of log2-CPM", main = "Cell RNAseq Samples", cex.lab = 0.85)
+#plot each line
+for (i in 1:length(counts_density)) lines(counts_density[[i]], col=cols[i], lty=ltys[i])
+#create legend
+legend("topright", colnames(data2plot),
+       col=cols, lty=ltys, cex=0.75,
+       border = "blue", text.col = "green4",
+       merge = TRUE, bg = "gray90")
+```
+<br>
+
+
+**M vs A plot**
+
+-Used in microarray experiment with two dyes to see technical variability between the intensities of the two dyes
+-For my dataset, it can be use to compare two samples or two groups of samples
+-I will use to compare between astrocyte and PD-derived astrocyte
+
+```{r}
+#Trimmed mean of m-values (d) method, based on hypothesis that most genes are not differentially expressed
+#Compare between astrocyte and PD-derived asctrocyte
+limma::plotMA(log2(cell_exp[, c(6,10)]), ylab = "M-ratio log expression", main = "hCOM-ASTRO vs hASTRO-PD_LRKK2")
+```
+<br>
+
+
+**Applying TMM to dataset**
+
+- Trimmed mean: average after remove upper and lower percentage of the data points
+- By default, 30% of the M values and 5% of the A values
+- TMM compare each sample to a reference
+- Data does not need to be modified prior to normalization
+
+```{r}
+#Convert data.frame to matrix
+#Need to make sure that use filtered count and matrix
+filtered_data_matrix <- as.matrix(cell_exp_filtered[, 4:13])
+rownames(filtered_data_matrix) <- cell_exp_filtered$id_gene #Add rownames
+
+#Define group as cell type to compare
+tmMreq = DGEList(counts = filtered_data_matrix, group = samples$cell_type)
+#Calculate normalization factors
+tmMreq = calcNormFactors(tmMreq)
+
+#Get normalized data
+normalized_counts <- cpm(tmMreq)
+```
+<br>
+
+
+**Two density graphs**
+
+- Comparison between normalized and not normalized data with density graphs
+- There is some difference between two plots
+- Each line in normalized data are closer together compare to not normalized data except hole that located in around range 0 get bigger.
+- Location of lines in normalized data are different compare to not normalized data
+
+```{r}
+#Separate the area to load 2 graphs
+par(mfrow= c(1,2))
+
+#Not normalized data (left)
+counts_density <- apply(log2(cpm(cell_exp_filtered[, 4:13])), 2, density)
+#Calculate the limits across all the samples
+xlim <- 0; ylim <- 0
+for (i in 1:length(counts_density)){
+  xlim <- range(c(xlim, counts_density[[i]]$x));
+  ylim <- range(c(ylim, counts_density[[i]]$y))
+}
+cols <- rainbow(length(counts_density))
+ltys <- rep(1, length(counts_density))
+#plot the first density plot to initialize the plot
+plot(counts_density[[1]], xlim=xlim, ylim=ylim, type="n",
+     ylab="Smoothing density of log2-CPM", main = "Cell RNAseq Samples", cex.lab = 0.85)
+#plot each line
+for (i in 1:length(counts_density)) lines(counts_density[[i]], col=cols[i], lty=ltys[i])
+#create legend
+legend("topright", colnames(data2plot),
+       col=cols, lty=ltys, cex=0.75,
+       border = "blue", text.col = "green4",
+       merge = TRUE, bg = "gray90")
+
+#Normalized data (right)
+normalized_density <- apply(log2(normalized_counts[, 1:9]), 2, density)
+#Calculate the limits across all the samples
+xlim <- 0; ylim <- 0
+for (i in 1:length(normalized_density)){
+  xlim <- range(c(xlim, normalized_density[[i]]$x));
+  ylim <- range(c(ylim, normalized_density[[i]]$y))
+}
+cols <- rainbow(length(normalized_density))
+ltys <- rep(1, length(normalized_density))
+#plot the first density plot ot initialize the plot
+plot(normalized_density[[1]], xlim=xlim, ylim=ylim, type="n",
+     ylab="Smoothing density of normalized log2-CPM", main = "Normalized Cell RNAseq Samples", cex.lab = 0.85)
+#plot each line
+for (i in 1:length(normalized_density)) lines(normalized_density[[i]], col=cols[i], lty=ltys[i])
+#create legend
+legend("topright", colnames(data2plot),
+       col=cols, lty=ltys, cex=0.75,
+       border = "blue", text.col = "green4",
+       merge = TRUE, bg = "gray90")
+```
+<br>
+
+
+**Two boxplots**
+
+- Comparison between normalized and not normalized data with box plots
+- There is some difference between two plots
+- Median of each samples are more equal to each other in normalized box plots.
+- I don't think interquartile range changed
+```{r, warning = FALSE}
+#Separate the area to load 2 graphs
+par(mfrow= c(1,2))
+
+#Not normalized boxplot
+data2plot <- log2(cpm(cell_exp_filtered[,4:13]))
+boxplot(data2plot, xlab = "Samples", ylab = "log2 CPM",
+        las = 2, cex = 0.5, cex.lab = 0.5,
+        cex.axis = 0.5, main = "Cell RNAseq Samples")
+#draw the median of each box plot
+abline(h = median(apply(data2plot, 2, median)), col = "green", lwd = 0.6, lty = "dashed")
+
+#Normalized boxplot
+data2plot <- log2(normalized_counts[,1:9])
+boxplot(data2plot, xlab = "Samples", ylab = "log2 CPM",
+        las = 2, cex = 0.5, cex.lab = 0.5,
+        cex.axis = 0.5, main = "Normalized Cell RNAseq Samples")
+#draw the median of each box plot
+abline(h = median(apply(data2plot, 2, median)), col = "green", lwd = 0.6, lty = "dashed")
+```
+<br>
+
+
+**MDS plot**
+
+- MDS plot represent the distance between samples
+- Closer distence mean similar in RNAseq
+- Same type of cell are cluster together (small distance)
+- Dark red (healthy donor) and dark orange (PD patient) cluster together because both are IPSC cell. Only difference is expression of mutated gene that lead to parkison disease, such as LRRK2.
+
+```{r}
+#MDS plot to see the distance between samples
+plotMDS(tmMreq, labels=rownames(samples),
+        main = "MDS Plot of Samples",
+        col = c("darkgreen", "darkblue", "darkred", "brown", "darkorange")[factor(samples$cell_type)])
+```
+<br>
+
+
+**Estimate common and tagwise dispersion**
+
+- Dispersion describe how much variance deviated from teh mean
+- Specific to edgeR and used downstream when calculating differential expression
+- Can estimate common and tagwise disperison
+- Common dispersion calculate common disperions values
+- Tagwise dispersion calculate gene-specific disterpsion
+
+```{r}
+#Estimate common and tagwise dispersion
+model_design <- model.matrix(~samples$compare + samples$cell_type+0) 
+dispersion <- estimateDisp(tmMreq, model_design)
+```
+<br>
+
+
+**Plot BCV**
+
+- Dispersion squared is biological coefficient of variation (BCV)
+- Dispersion is a measrue of vriation within samples
+- Each dot represent BCV for each gene
+- Red line represent common dispersion
+- Blue line represent the trend of dataset
+- All the Tagwise are within common and trend line, which is good
+```{r}
+#Plot BCV with sample
+plotBCV(dispersion, col.tagwise = "black", col.common = "red", main = "Biological Coefficient of Variation of Samples")
+```
+<br>
+
+
+**Plot mean variable relationship**
+
+- Gray dots are raw varaince of the counts
+- Blue dots are estimated varaince by using tagwise dispersion
+- Red x are variance binned common dispersion
+- Dark red x are average of the raw varaince of each bin of genes
+- Blue line is mean variance related to negative binomial distribution with common dispersion
+- All the line, x, and dots are in same trend within NBline, which is good
+- I got information from this webpage [link](https://www.rdocumentation.org/packages/edgeR/versions/3.14.0/topics/meanvar)
+
+```{r}
+#Separate the area to load 2 graphs
+par(mfrow= c(1,2))
+plotMeanVar(dispersion, 
+            show.raw.vars = TRUE,                    
+            show.tagwise.vars=TRUE,                  
+            NBline=TRUE,                             
+            show.ave.raw.vars = TRUE,                
+            show.binned.common.disp.vars = TRUE,
+            main = "Mean-Variance Relationship of Samples")
+```
+<br>
+
+### Identifier mapping ###
+
+- Commonly, data generation work with different identifiers
+- I am going to use Esembl to mapp human gene
+<br>
+
+
+**Biomart**
+
+- Important to working with up to date annotations and the right versions
+```{r}
+#Connect to ensembl mart and limit to human datasets
+#Using grch37 because I keep get error when using most updated ensembl
+ensembl <- useMart("ensembl", dataset = "hsapiens_gene_ensembl", host="grch37.ensembl.org")
+```
+<br>
+
+
+**Converting Human Ensembl Gene Ids to HGNC symbols**
+
+- Attribute: Ensembl gene Ids and HGNC symbols
+- Filter: Ensembl gene ids
+- Values: Ensembl gene ids
+```{r, message=FALSE}
+#Filter
+biomart_human_filters <- listFilters(ensembl)                  #Will go with ensembl_gene_id_version since my dataset contain version
+kable(biomart_human_filters[
+  grep(biomart_human_filters$name,pattern="ensembl"),],
+      format="html")
+
+#Attributes
+kable(searchAttributes(mart = ensembl, 'hgnc') , format="html") #Will go with hgnc_symbol
+```
+<br>
+
+
+```{r, result='hide'}
+#Check to see if cell_id_conversion file exists
+conversion_stash <- "cell_id_conversion.rds"
+if(file.exists(conversion_stash)){
+  cell_id_conversion <- readRDS(conversion_stash)
+}else{
+  cell_id_conversion <- getBM(attributes =
+                              c("ensembl_gene_id", "hgnc_symbol"),
+                              filters = c("ensembl_gene_id"),
+                              values = factor(cell_exp_filtered$id_gene),  #Values is first colum of my expression matrix
+                              mart = ensembl)
+  saveRDS(cell_id_conversion, conversion_stash)
+}
+```
+<br>
+
+
+**Difference between the number of mappings we have and the number of rows in our normalized set**
+```{r}
+#Difference between number of mapping I have and number of rows in normalized set
+#Does not directly shows that missing that many
+nrow(normalized_counts) - nrow(cell_id_conversion)
+```
+<br>
+
+
+**Merge new identifier**
+```{r}
+#Merge the new identifier
+normalized_counts_annot <- merge(cell_id_conversion, normalized_counts, by.x = 1, by.y = 0, all.y = TRUE)
+kable(normalized_counts_annot[1:5,1:5],type = "html")
+```
+<br>
+
+
+**Number of missing identifiers**
+```{r}
+#Number of identifier are missing
+ensembl_id_missing_gene <- normalized_counts_annot$ensembl_gene_id[
+  which(is.na(normalized_counts_annot$hgnc_symbol))]
+length(ensembl_id_missing_gene)
+#Were there expression values that could not be mapped to current HUGO symbols?
+#Yes. (503/17148) = 0.029. About 2.9% of my dataset miss identifiers.
+```
+<br>
+
+
+**Table of gene that miss identifier as NA**
+
+-ENSG00000002586 is gene that related Xg blood group [link](https://useast.ensembl.org/Homo_sapiens/Gene/Summary?g=ENSG00000002586;r=X:2691187-2741309)
+-ENSG00000124333 is gene that related to vesicle associated membrane protein  [link](https://useast.ensembl.org/Homo_sapiens/Gene/Summary?g=ENSG00000124333;r=X:155881345-155943769)
+-Some of gene has NA or empty string for hgnc_symbol, which can be novel transcription or common gene. Therefore, I would like to keep these gene instead of remove the them
+
+```{r}
+kable(normalized_counts_annot[which(is.na(normalized_counts_annot$hgnc_symbol))[1:5],], type="html")
+```
+<br>
+
+**Table of gene that miss identifier as empty string**
+
+-1332 of gene has empty string as hgnc_symbol 
+
+```{r}
+#Identify number of gene with empty string as hgnc_symbol
+nrow(normalized_counts_annot[which(nchar(normalized_counts_annot$hgnc_symbol)==0),])
+```
+<br>
+
+- Some gene has empty string as hgnc_symbol
+-	ENSG00000005189 is gene of RNA exonuclease [link](https://useast.ensembl.org/Homo_sapiens/Gene/Summary?g=ENSG00000005189;r=16:20806429-20849668)
+- ENSG00000073169 is gene of selenoprotein O [link](https://useast.ensembl.org/Homo_sapiens/Gene/Summary?g=ENSG00000073169;r=22:50200979-50217616)
+
+```{r}
+kable(normalized_counts_annot[which(nchar(normalized_counts_annot$hgnc_symbol)==0)[1:5],], type="html")
+```
+<br>
+
+
+**Identify different ensembl gene ids with duplicate HUGO gene symbol**
+
+```{r}
+#Collect all the duplicate of hgnc_symbol
+hugoDuplicated <- normalized_counts_annot[duplicated(normalized_counts_annot$hgnc_symbol), 1:2]
+
+#Collect all the non empty string for hgnc_synbol
+hugoEmptyDuplicated <- hugoDuplicated[!(nchar(hugoDuplicated$hgnc_symbol) == 0),]
+
+#Collect all the non NA for hgnc_synbol
+nohugoEmptyNADuplicated <- hugoEmptyDuplicated[!is.na(hugoEmptyDuplicated$hgnc_symbol),]
+nohugoEmptyNADuplicated
+```
+
+-Detect the possible duplicate
+-Chekc the duplicate
+
+```{r}
+#Colect the TIMM23B from normalized_counts_annot dataset
+normalized_counts_annot[which(normalized_counts_annot$hgnc_symbol == "TIMM23B"), 1:6]
+```
+
+- I got two different ensemble_gene_id
+# ENSG00000204152[link](https://useast.ensembl.org/Homo_sapiens/Gene/Summary?g=ENSG00000204152;r=10:49942049-49974850)
+# ENSG00000265354[link](https://useast.ensembl.org/Homo_sapiens/Gene/Summary?g=ENSG00000265354;r=10:45972489-46003742;t=ENST00000580018)
+- ENSG00000265354 is translocase of inner mitochondrial membrane 23
+- ENSG00000204152 is ranslocase of inner mitochondrial membrane 23 homolog B
+- These indicates that both gene doing simlar job since one is homolog to other
+- When I look at the gene count of each gene, there is more significant amoutn of gene count on ENSG00000265354 compare to homolog
+- Since I do not think that this duplicate is would affect the data and not specific reason to remove it, I will just keep duplicate
+
+```{r}
+#Only remove gene with NA in hgnc_symbol
+finalized_dataset <- normalized_counts_annot
+head(finalized_dataset)
+```
+
+```{r}
+#Number of row in finlaized dataset
+nrow(finalized_dataset)
+```
+<br>
+
+###Final Coverage###
+
+- Start as 58347 gene
+- End as 17164 gene
+
+My dataset start with 58347 rows with 11 columns. First column contain gene id, name, and cell type. Therefore, I separate the first column into 3 different columns, such as id_gene, gene_name, and gene_type. Then I filter out the dataset out based on the size of count per million on each gene. I set at require at least require 1 count per million and 2 duplicates since each cell type has 1 duplicate. This reduce to 17148 rows 13 and columns. I convert the ensembl_ID to hgnc by using use ensembl to identify missing identifier and merge with existing contain, which increase to 17164 rows and 13 columnsgene. At the same time, I identify 503 gene that has NA as hgnc_symbol. Also, I find out that 1332 gene have empty string as hgnc_symbol. I also identify the duplicate, ENSG00000265354 and ENSG00000204152. Theses gene has specific function that might or might not important. However, since I cannot determine all gene one by one, I will keep all the data after filteration based on size of count per million on each gene.
+
+
+
+```{r}
+#Save filnalized data in RDS format
+saveRDS(finalized_dataset, file = "Cell_expression.RDS")
+```
+
+
+
+<br>
+### Reference ###
+
+1.Mark D. Robinson, Davis J. McCarthy, Gordon K. Smyth, edgeR: a Bioconductor package for differential expression analysis of digital gene expression    data, Bioinformatics, Volume 26, Issue 1, 1 January 2010, Pages 139–140, https://doi.org/10.1093/bioinformatics/btp616
+
+2.di Domenico, A., Carola, G., Calatayud, C., Pons-Espinal, M., Muñoz, J. P., Richaud-Patin, Y., … Consiglio, A. (2019). Patient-Specific iPSC-Derived Astrocytes Contribute to Non-Cell-Autonomous Neurodegeneration in Parkinson's Disease. Stem cell reports, 12(2), 213–229. doi:10.1016/j.stemcr.2018.12.011
+
+
+
+
+
+
