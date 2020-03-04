@@ -1,0 +1,575 @@
+---
+title: "Assignment 2"
+author: "Jongmin Lim"
+output: 
+  html_document:
+    toc: yes
+    toc_depth: 3
+bibliography: library.bib
+---
+
+By Jongmin Lim
+BCB420
+
+### Assignment 1  ### 
+
+
+```{r test-main, child = 'A1_jongminlim.Rmd'}
+```
+<br>
+
+### Assignment2 ###
+
+### Introduction ###
+- I got filtered out data of RNAseq from assignment 1. In assignment, I will multiple statistical methods with threshold to collect the differentially expressed genes, either up or down regulated, in text format. Then, plot heat map and other plot methods to see the result and interpret the result with papers.
+
+**Install require packages**
+```{r, result='hide', message=FALSE, warning = FALSE}
+if (!requireNamespace("colorRamps", quietly=TRUE)) {
+  install.packages("colorRamps")
+}
+if (!requireNamespace("doBy", quietly=TRUE)) {
+  install.packages("doBy")
+}
+if (!requireNamespace("gprofiler2", quietly=TRUE)) {
+  install.packages("gprofiler2")
+}
+```
+<br>
+
+**Load library**
+```{r test-child, result='hide', message=FALSE, warning = FALSE}
+#List of packages that need to be active for this project
+library(GEOmetadb)
+library(knitr)
+library(tidyr)
+library(biomaRt)
+library(edgeR)
+library(BiocGenerics)
+library(ComplexHeatmap)
+library(circlize)
+library(colorRamps)
+library(dplyr)
+library(doBy)
+library(gprofiler2)
+library(kableExtra)
+library(limma)
+```
+<br>
+
+
+**Load the data**
+```{r}
+#Load data from Assignment 1
+normalized_count_data <- read.table("Cell_expression.txt", 
+                                    header = TRUE, 
+                                    sep = "\t", 
+                                    stringsAsFactors = FALSE,
+                                    check.names = FALSE)
+
+#Read first five data with 5 columns
+kable(normalized_count_data[1:5,1:5], type="html") %>%
+  kable_styling(bootstrap_options = "striped", full_width = F)
+```
+<br>
+
+### New normalization to data for heatmap ###
+
+```{r, result='hide', message=FALSE, warning = FALSE}
+#Normalize the data
+normalized_count_data %>%
+  mutate_at(vars(-ensembl_gene_id, -hgnc_symbol), funs(.+1)) %>%
+  mutate_at(vars(-ensembl_gene_id, -hgnc_symbol), funs(log2(.))) -> new_normalized_count_data
+
+#Remove any duplicate ensembl_gene_id
+new_normalized_count_data <- new_normalized_count_data[!duplicated(new_normalized_count_data$ensembl_gene_id),]
+```
+<br>
+```{r}
+#Check
+kable(new_normalized_count_data[1:10,], type="html")%>%
+  kable_styling(bootstrap_options = "striped", full_width = F)
+```
+<br>
+
+**Numerical matrix**
+```{r}
+#Numerical matrix for heatmap
+heatmap_matrix <- new_normalized_count_data[,3:ncol(new_normalized_count_data)]
+
+#Assign rowname by ensemble_gene_id
+rownames(heatmap_matrix) <- make.names(new_normalized_count_data$ensembl_gene_id, unique=TRUE)
+
+#Assign colnames by gene names
+colnames(heatmap_matrix) <- colnames(new_normalized_count_data[,3:ncol(new_normalized_count_data)])
+```
+<br>
+
+### Difference in gene expression ###
+
+- According from original paper CD44 is high expression in astrocyte. Therefore, I choose CD44 as gene of interest [@di2019patient].
+- CD44 3 time more expressed in hCOM_ASTRO, hASTRO_CT, hASTRO_PD
+```{r}
+#Separate group based on cell type
+sample_group_hASTRO <- grep(colnames(new_normalized_count_data),
+                                pattern = "^hASTRO")
+sample_group_iPSC <- grep(colnames(new_normalized_count_data),
+                                pattern = "^iPSC")
+
+#Set gene of interest as CD44, astrocyte specific gene
+gene_of_interest <- which(new_normalized_count_data$hgnc_symbol == "CD44")
+```
+<br>
+
+- CD44 expression in astrocyte
+```{r}
+#CD44 expression in astrocyte
+cd44_hASTRO_samples <- t(new_normalized_count_data[gene_of_interest, sample_group_hASTRO])
+colnames(cd44_hASTRO_samples) <- c("hASTRO")
+cd44_hASTRO_samples
+```
+<br>
+
+- CD44 expression in iPSC, around 3 times lower compare to CD44 expression in astrocyte
+```{r}
+#CD44 expression in iPSC
+cd44_iPSC_samples <- t(new_normalized_count_data[gene_of_interest, sample_group_iPSC])
+colnames(cd44_iPSC_samples) <- c("iPSC")
+cd44_iPSC_samples
+```
+<br>
+
+- Use simple t.test compare this individual gene
+- Null hypothesis of the two sample t-test is that there is no difference in means of each sample
+- Assume both samples are normally distributed
+```{r}
+#Run t test of CD44 expression of astrocyte and ipsc 
+t.test(x=t(cd44_hASTRO_samples), y=t(cd44_iPSC_samples))
+```
+<br>
+
+- CD44 expression in astrocyte
+```{r}
+#CD44 expression in astrocyte after t test
+cd44_hASTRO_samples <- t(new_normalized_count_data[gene_of_interest, sample_group_hASTRO])
+colnames(cd44_hASTRO_samples) <- c("hASTRO")
+cd44_hASTRO_samples
+```
+<br>
+
+- CD44 expression in iPSC
+- CD44 3 time more expressed in differentiated astrocyte
+```{r}
+#CD44 expression in iPSC after t test
+cd44_iPSC_samples <- t(new_normalized_count_data[gene_of_interest, sample_group_iPSC])
+colnames(cd44_iPSC_samples) <- c("iPSC")
+cd44_iPSC_samples
+```
+
+
+
+
+
+**Model**
+
+- Different type of cells, either iPSC or hASTRO will contribute the difference
+- There will be difference within patient (same cell type), but it would be small
+```{r}
+#Create data frame that has separate column for patient and cell type based on name of samples
+samples <- data.frame(
+           lapply(colnames(new_normalized_count_data)[3:ncol(new_normalized_count_data)],
+           FUN=function(x){
+             unlist(strsplit(x, split = "\\."))[c(1,2)]})) #Separate based on "." and put in column 1 and 2
+
+#Use columns name from new_normalized_count_data
+colnames(samples) <- colnames(new_normalized_count_data)[3:ncol(new_normalized_count_data)]
+
+#Separate columns based on cell type and patient
+rownames(samples) <- c("cell_type", "patient")
+samples <- data.frame(t(samples))
+
+#Show the table
+samples
+```
+<br>
+
+### Linear model ###
+
+- Create a design matrix, which need to create linear model
+```{r}
+#Model design based on samples cell type
+model_design <- model.matrix(~samples$cell_type)
+
+#Show the table
+kable(model_design, type="html") %>%
+  kable_styling(bootstrap_options = "striped", full_width = F)
+```
+<br>
+
+- Create data matrix
+- Website that explain about assayData [@ExpressionSet]
+```{r}
+#Create matrix that contain infomration of normalized data from column 3 to end
+expressionMatrix <- as.matrix(new_normalized_count_data[,3:ncol(new_normalized_count_data)])
+
+#Ensemble gene as row name
+rownames(expressionMatrix) <- new_normalized_count_data$ensembl_gene_id
+
+#Set column name based on normalized data
+colnames(expressionMatrix) <- colnames(new_normalized_count_data)[3:ncol(new_normalized_count_data)]
+
+#Create minimal set by using assayData, which must contain a matrix expression with rows and representing features and columnes representing samples
+minimalSet <- ExpressionSet(assayData=expressionMatrix)
+
+#Fit data to the above model
+fit <- lmFit(minimalSet, model_design)
+```
+<br>
+
+- Apply empirical Bayes to compute differential expression for the above described model
+- The parameter trend=TRUE is specific to RNA-seq data
+- I use BH threshold to reduce the false discovery rate, which will avoid type 1 error. The other adjust method are too extreme that either increase false negative or false positive for this data. [@BH]
+```{r}
+#Apply empitical bayes to fit data
+ebayes_fit <- eBayes(fit, trend=TRUE)
+
+#Collect the data that adjust method, which is BH, applied
+topfit <- topTable(ebayes_fit,
+                   coef=ncol(model_design),
+                   adjust.method = "BH",
+                   number = nrow(expressionMatrix))
+
+#Merge hgnc names to topfit table
+output_hits <- merge(new_normalized_count_data[,1:2],
+                     topfit,
+                     by.y = 0, by.x = 1,
+                     all.y = TRUE)
+#Sort by pvalue
+output_hits <- output_hits[order(output_hits$P.Value),]
+#Table
+
+kable(output_hits[1:10,], type="html") %>%
+  kable_styling(bootstrap_options = "striped", full_width = F)
+```
+<br>
+
+- 10741 of genes pass the threshold p-value <0.05.
+```{r}
+length(which(output_hits$P.Value < 0.05))
+```
+<br>
+
+- 9869 genes pass correction
+```{r}
+length(which(output_hits$adj.P.Val < 0.05))
+```
+<br>
+
+### Multiple Hypothesis test ###
+
+- When number of tests performed increases, a false positive might increase
+- Multiple hypothesis testing will come up for differential expression, pathways analysis, and for any analysis where there are multiple tests being performed
+- Control for family-wise error rate or for false discovery rate
+```{r}
+#Create a design matrix
+model_design_pat <- model.matrix(
+  ~samples$patient + samples$cell_type) #Design matrix based on cell type and sample group
+#Check the matrix
+table_model_design_pat <- as.data.frame(model_design_pat)
+table_model_design_pat
+```
+<br>
+
+- fit data to the model_design_cell
+```{r}
+fit_pat <- lmFit(minimalSet, model_design_pat)
+```
+<br>
+
+- Apply empirical Bayes to compute differential expression for the above described model
+```{r}
+#The parameter trend = TRUE is specific to RND-seq data
+ebayes_fit_pat <- eBayes(fit_pat, trend = TRUE)
+topfit_pat <- topTable(ebayes_fit_pat,
+                       coef = ncol(model_design_pat),
+                       adjust.method = "BH",
+                       number = nrow(expressionMatrix))
+
+#Merge hgnc names to topfit table
+output_hits_pat <- merge(new_normalized_count_data[, 1:2],
+                         topfit_pat, by.y=0, by.x=1, all.y=TRUE)
+#Sort by pvalue
+output_hits_pat <- output_hits_pat[order(output_hits_pat$P.Value),]
+
+#Check
+kable(output_hits_pat[1:10,], type="html")%>%
+  kable_styling(bootstrap_options = "striped", full_width = F)
+```
+<br>
+
+- 10263 genes pass the threshold p-value < 0.05
+- 10263 significantly differential expressed
+```{r}
+length(which(output_hits_pat$P.Value < 0.05))
+```
+<br>
+
+- 0 genes pass the threshold correction
+```{r}
+length(which(output_hits_pat$adj.P.Value < 0.05))
+```
+<br>
+
+- Use Quasi to calculate differential expression genes
+```{r}
+#Set up edgeR objects
+edge_obj = DGEList(counts=filtered_data_matrix, group=samples$cell_type)
+
+#Estimate Dispersion - our model design
+edge_obj <- estimateDisp(edge_obj, model_design_pat)
+
+#Fit the model
+fit <- glmQLFit(edge_obj, model_design_pat)
+```
+<br>
+
+- Calculate differential expression using the Quasi likelihood model
+```{r}
+qlf.iPSC_vs_hASTRO <- glmQLFTest(fit, coef='samples$cell_typeiPSC')
+
+#plot the table
+topTags(qlf.iPSC_vs_hASTRO)
+```
+<br>
+
+- Grab all the results
+```{r}
+qlf_output_hits <- topTags(qlf.iPSC_vs_hASTRO, 
+                           sort.by = "PValue",
+                           n = nrow(new_normalized_count_data),
+                           adjust.method = "BH")  #Use BH as adjust method for this assignment
+```
+<br>
+
+- 10217 genes pass the threshold p-value < 0.05, which indicates that 10127 genes are significantly differentially expressed
+- I use threshold p-value less than 0.05 because it is significant enough to get differently expressed genes
+```{r}
+length(which(qlf_output_hits$table$PValue < 0.05))
+```
+<br>
+
+- 9042 genes pass the correction
+```{r}
+length(which(qlf_output_hits$table$FDR < 0.05))
+```
+<br>
+
+
+### Heat map ###
+
+- Heat map of top hits using the Quasi likelihood model
+- Heat map is graph that translate numbers into scale of color
+- Good for summary of what are data looks like
+- Same cell_type cluster together in heat map as we can see clear block of gene expression between iPSC and astrocyte.
+- This can happen because author need to provide specific transcription factor to differentiate fibroblast to iPSC and iPSC to astrocyte. Since those specific transcription factors will significantly up or down regulated, the cluster would be more
+```{r}
+#Set top hit
+top_hits <- rownames(qlf_output_hits$table)[output_hits_pat$P.Value<0.05]
+#Set heatmap matrix tophits
+heatmap_matrix_tophits <- t(
+  scale(t(heatmap_matrix[which(rownames(heatmap_matrix) %in% top_hits),])))
+
+#Sorth the column by cell type
+#Organize by cell type
+heatmap_matrix_tophits <- heatmap_matrix_tophits[, c(grep(colnames(heatmap_matrix_tophits), pattern = "^iPSC"),
+                                                     grep(colnames(heatmap_matrix_tophits), pattern = "^hASTRO"))]
+
+if(min(heatmap_matrix_tophits) == 0){
+    heatmap_col = colorRamp2(c( 0, max(heatmap_matrix_tophits)), #if no negative value in heatmap matrix, 
+                             c( "white", "red"))                 #use white and red color
+  } else {
+    heatmap_col = colorRamp2(c(min(heatmap_matrix_tophits), 0, max(heatmap_matrix_tophits)), c("blue", "white", "red")) #blue, white, red if heatmap matrix contain negative value
+  }
+#Plot
+current_heatmap <- Heatmap(as.matrix(heatmap_matrix_tophits),
+                           cluster_rows = TRUE,
+                           cluster_columns = TRUE,
+                           show_row_dend = TRUE,
+                           show_column_dend = TRUE, 
+                           col = heatmap_col,
+                           show_column_names = TRUE, 
+                           show_row_names = FALSE,
+                           show_heatmap_legend = TRUE,
+                           column_title  = "Heatmap for top hits")
+current_heatmap
+```
+<br>
+
+### Enrichment Analysis ###
+
+```{r}
+#Calculate normalization factors
+edge_objs <- calcNormFactors(edge_obj)
+
+#Dit model
+fits <- glmQLFit(edge_objs, model_design_pat)
+
+#calculate differential expression
+qlf.hiPSC_vs_hASTRO <- glmQLFTest(fits, coef='samples$cell_typeiPSC')
+```
+<br>
+
+- Get all the result
+```{r}
+qlf_output_hit <- topTags(qlf.hiPSC_vs_hASTRO,sort.by = "PValue",
+                          n = nrow(new_normalized_count_data),
+                          adjust.method = "BH")
+```
+<br>
+
+- 9977 genes pass the threshold p-value < 0.05
+```{r}
+length(which(qlf_output_hit$table$PValue < 0.05))
+```
+<br>
+
+- 8684 genes pass correction
+```{r}
+length(which(qlf_output_hit$table$FDR < 0.05))
+```
+<br>
+
+- Output top
+```{r}
+topTags(qlf.hiPSC_vs_hASTRO)
+```
+<br>
+
+- 4930 genes are up regulated (downregulated when differentiate iPSC to astrocyte)
+```{r}
+length(which(qlf_output_hit$table$PValue < 0.05 & qlf_output_hit$table$logFC > 0))
+```
+<br>
+
+- 5047 genes are down regulated (upregulated when differentiate iPSC to astrocyte)
+```{r}
+length(which(qlf_output_hit$table$PValue < 0.05 & qlf_output_hit$table$logFC < 0))
+```
+<br>
+
+- Create thresholded lists of genes
+- The RNAseq data has been reversed. I want to see the expression difference after differentiate the astrocyte. Therefore, I will have upregulated_gene as downregulated file and vice versa. 
+```{r}
+#merge gene names with the top hits
+qlf_output_hits_withgn <- merge(new_normalized_count_data[,1:2],qlf_output_hit, by.x=1, by.y = 0)
+qlf_output_hits_withgn[,"rank"] <- -log(qlf_output_hits_withgn$PValue,base =10) * sign(qlf_output_hits_withgn$logFC)
+qlf_output_hits_withgn <- qlf_output_hits_withgn[order(qlf_output_hits_withgn$rank),]
+downregulated_genes <- qlf_output_hits_withgn$hgnc_symbol[
+  which(qlf_output_hits_withgn$PValue < 0.05            #downregulated when differentiate iPSC to astrocyte 
+             & qlf_output_hits_withgn$logFC > 0)]
+upregulated_genes <- qlf_output_hits_withgn$hgnc_symbol[
+  which(qlf_output_hits_withgn$PValue < 0.05 
+             & qlf_output_hits_withgn$logFC < 0)]      #upregulated when differentiate iPSC to astrocyte
+write.table(x=downregulated_genes,
+            file="cell_downregulated_genes.txt",sep = "\t",
+            row.names = FALSE,col.names = FALSE,quote = FALSE)    #save as downregulated file 
+write.table(x=upregulated_genes,
+            file="cell_upregulated_genes.txt",sep = "\t",
+            row.names = FALSE,col.names = FALSE,quote = FALSE)   #save as upregulated file 
+```
+<br>
+
+### Volcanoplot ###
+
+<br>
+- Upregulated genes (red) are located mostly lower side of graph while upregulated genes (blue) are located upper side of graph.
+- Gene of interest (orange), which is part of upregulated gene, is located lower side of graph.
+- No differentailly expressed genes (grey) are located at middle, which indicates that iPSC and ipsc-derived astrocyte express these gene in similar level.
+```{r}
+#P values from data that apply multiple hypothesis testing
+qlf_cell_model_pvalues <- data.frame(ensembl_id = rownames(qlf_output_hits$table),
+                                     qlf_cell_pvalue=qlf_output_hits$table$PValue)
+
+#downregulated when differentiate iPSC to astrocyte
+downregulated_gene <- qlf_output_hits_withgn[which(qlf_output_hits_withgn$PValue < 0.05 & qlf_output_hits_withgn$logFC > 0),]
+upregulated_gene <- qlf_output_hits_withgn[which(qlf_output_hits_withgn$PValue < 0.05 & qlf_output_hits_withgn$logFC < 0),] 
+
+#Plot for gene of interest CD44
+ensembl_of_interest <- new_normalized_count_data$ensembl_gene_id[
+                       which(new_normalized_count_data$hgnc_symbol == "CD44")]
+
+#Downregulated gene ensembl_id 
+downregulated_gene <-  data.frame(ensembl_id = downregulated_gene$ensembl_gene_id)
+
+#Upregualted gene ensembl_id
+upregulated_gene <-  data.frame(ensembl_id = upregulated_gene$ensembl_gene_id)
+
+qlf_cell_model_pvalues$colour <- "grey" #Grey for all genes
+qlf_cell_model_pvalues$colour[upregulated_gene$ensembl_id] <- "red" #Red for upregulated
+qlf_cell_model_pvalues$colour[downregulated_gene$ensembl_id] <- "blue" #Blue for downregulated
+qlf_cell_model_pvalues$colour[qlf_cell_model_pvalues$ensembl_id==ensembl_of_interest] <- "orange" #Orange for gene of interest
+
+volcanoplot(ebayes_fit,
+            coef = ncol(ebayes_fit),
+            ylab = "M-ratio log expression",
+            cex = ifelse(qlf_cell_model_pvalues$colour == "orange", 2, 0.3),
+            col = qlf_cell_model_pvalues$colour,
+            main = "Upregulated genes vs Downregulated genes")
+```
+<br>
+
+```{r}
+#Check to make sure upregulated genes list contain the astrocyte specific gene
+upregulated_genes_dataframe <- as.data.frame(upregulated_genes)
+#List of gene that expressed in astrocyte
+list_upregulated <- c(upregulated_genes_dataframe[upregulated_genes_dataframe == "CD44"],
+                      upregulated_genes_dataframe[upregulated_genes_dataframe == "SOX9"],
+                      upregulated_genes_dataframe[upregulated_genes_dataframe == "DIO2"])
+#Remove NA
+list_upregulated <- list_upregulated[!is.na(list_upregulated)]
+list_upregulated
+```
+<br>
+
+```{r}
+#Check to make sure upregulated genes list contain the astrocyte specific gene
+downregulated_genes_dataframe <- as.data.frame(downregulated_genes)
+#List of gene that expressed in iPSC
+list_downregulated <- c(downregulated_genes_dataframe[downregulated_genes_dataframe == "MYC"],
+                      downregulated_genes_dataframe[downregulated_genes_dataframe == "NANOG"],
+                      downregulated_genes_dataframe[downregulated_genes_dataframe == "SALL4"])
+#Remove NA
+list_downregulated <- list_downregulated[!is.na(list_downregulated)]
+list_downregulated
+```
+<br>
+
+- I choose g:profiler because it update frequently and has graphical interface on website (user friendly).
+- I use GO biological process (releases/2019-07-01), Reactome (annotations:ensembl classes: 2019-10-2), and WikiPathways (releases/ 2019-09-10). I use GO biological process because it provide framework and set of concept for describing the function of gene products of their outcome, which would be significantly differential gene expression of iPSC and astrocyte [@Gobiologicalprocess]. I use reactome because it is open source and peer-reviewed pathway database that is useful to analyze the pathway of significantly differential genes [@Reactome]. WikiPathways present model for pathway database and it is peer-reviewed. I use WikiPathway to compare to reactome [@WikiPathways]. 
+- I use Benjamini-Hochberg FDR as significance threshold with 0.05 as user threshold and term size as 5-200. For upregulated gene, I got 844 for GO biological process, 153 for Reactome, and 81 for WikiPathways. For downregulated gene, I got 538 for Go  biological process, 252 for Reactome, and 24 for WikiPathway.
+- For upregulated set of genes, I got top term as cell-substrate junction assembly (GO:0007044), transport to the golgi and subsequent modification (REAC:R-HSA-948021), and focal adhesion (WP:WP306). When I look threw list of term, mostly related about adhesion junction, IL signaling pathway, and vacuole organization and transportion. This makes sense since roles of astrocyte are regulate blood flow, homeostasis, and regulate synaptic transmission [@sofroniew2010astrocytes].
+- For downregulated set of genes, I got top terms as DNA-dependent DNA replication (GO:0006261), mitotic prometaphase (REAC:R-HSA-68877), and retinoblastoma gene in cancer (WP:WP2446). Terms are mostly related about DNA replication, mitosis, and telomere maintenance. This is true since iPSC has similar characteristic as embryonic stem cell, which needs to be able to proliferate and differentiate to different types of cell to grow into human [@vazin2010human].
+- When I combined up and down regulated set of genes and run on gprofiler, I got top terms as DNA biosynthetic process (GO:0071897), mitotic prometaphas (REAC:R-HSA-68877), and retinoblastoma gene in cancer (WP:WP2446). Top terms are mostly similar to downregulated set of genes while low terms are mostly similar to upregulated set of genes. This might happen because the set of genes that expressed in iPSC (downregulated set of genes) are unique and specific while gene that expressed in ipsc-derived astrocyte (upregulated set of genes) are more general and might also expressed in iPSC at lower level.
+- I save the geneset as csv format.
+- For upregulated genesets, I save as upregulated-gene.csv
+- For downregulated geneset, I save as downregulated_gene
+- For whole list of differentially expressed geneset, I save as list_of_gene.csv
+<br>
+
+### Interpretation ###
+
+- Over representation results support conclusions or mechanism discussed in the original paper. From original paper [@di2019patient], it shows with the heatmap transcriptomic profile of ipsc-derived astrocyte are silimar to asttrocyte than corresponding iPSC. Based on my heatmap, we can see that transcriptomic profile of ipsc-derived astrocyte is completely different from ipsc and similar within astrocytes. Author also mention about list of astrocyte specific genes, such as CD44, MLC1, and SOX9. These genes has been included in list of upregulated gene.
+- According to Takahashi work's, MYC, NANOG, and SALL4 are iPSC specific genes. This indicates that ipsc-derived astrocyte should downregulate these genes. I detect 3 genes in list of downregulated genes [@takahashi2008induction]. Therefore, I can conclude ipsc downregulate ipsc specific gene and upregulate the astrocyte specific gene to become ipse-derived astrocyte.  
+<br>
+
+
+
+### References ### 
+
+
+
+
+
+
+
+
